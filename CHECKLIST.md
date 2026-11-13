@@ -155,16 +155,51 @@ Result: **PASS WITH DOCUMENTED UNFIXED FINDINGS**.
 
 ## 7. Published version and latest tags
 
-The image will be published after Docker Hub authentication:
+The verified production image was published under both required tags:
 
 ```console
-docker tag loan-api:prod <dockerhub-username>/loan-api:1.0.0
-docker tag loan-api:prod <dockerhub-username>/loan-api:latest
-docker push <dockerhub-username>/loan-api:1.0.0
-docker push <dockerhub-username>/loan-api:latest
+$ docker tag loan-api:prod vatheka/loan-api:1.0.0
+$ docker tag loan-api:prod vatheka/loan-api:latest
+$ docker push vatheka/loan-api:1.0.0
+1.0.0: digest: sha256:adca976b5a673191b254ebd82d5699a54a95956211466655b99d5c2a5550f4d6
+$ docker push vatheka/loan-api:latest
+latest: digest: sha256:adca976b5a673191b254ebd82d5699a54a95956211466655b99d5c2a5550f4d6
 ```
 
-Result: **PENDING DOCKER HUB LOGIN AND PUSH**.
+Docker Hub: <https://hub.docker.com/r/vatheka/loan-api/tags>
+
+Result: **PASS**.
+
+## 8. Clean pull and run from Docker Hub
+
+The local production tags were removed before running the published image.
+
+```console
+$ docker rmi vatheka/loan-api:1.0.0 vatheka/loan-api:latest loan-api:prod
+Untagged: vatheka/loan-api:1.0.0
+Untagged: vatheka/loan-api:latest
+Untagged: loan-api:prod
+Deleted: sha256:adca976b5a673191b254ebd82d5699a54a95956211466655b99d5c2a5550f4d6
+
+$ docker run -d --name loan-api-registry-test -p 8000:8000 \
+    vatheka/loan-api:1.0.0
+Unable to find image 'vatheka/loan-api:1.0.0' locally
+Status: Downloaded newer image for vatheka/loan-api:1.0.0
+
+$ docker ps --filter name=loan-api-registry-test
+IMAGE                    STATUS                    PORTS
+vatheka/loan-api:1.0.0   Up 30 seconds (healthy)   0.0.0.0:8000->8000/tcp
+
+$ curl -fsS -w '\nHTTP %{http_code}\n' -X POST \
+    http://127.0.0.1:8000/api/v1/predictions \
+    -H 'Content-Type: application/json' \
+    -d '{"amount_usd":1500,"term_months":12,"monthly_income_usd":350.0,"previous_loans":1,"late_payments":0}'
+{"default_probability":0.095,"risk_band":"low","model_version":"1.0.0"}
+HTTP 200
+```
+
+Result: **PASS**. The published image ran without the repository's local
+files.
 
 ## Additional application test
 
