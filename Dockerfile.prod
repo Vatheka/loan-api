@@ -12,9 +12,11 @@ RUN python train.py
 
 FROM python:3.12-slim
 
+ARG GIT_SHA=dev
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    GIT_SHA=$GIT_SHA
 
 RUN apt-get update \
     && apt-get upgrade -y \
