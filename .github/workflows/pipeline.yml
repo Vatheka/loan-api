@@ -1,0 +1,90 @@
+name: Test, build and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python train.py
+      - run: pytest -v
+
+  build-and-push:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build and push commit-tagged image
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/loan-api"
+          docker build -f Dockerfile.prod --build-arg GIT_SHA="$GITHUB_SHA" \
+            -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:latest"
+
+  deploy:
+    needs: build-and-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+    steps:
+      - name: Trigger Render deployment for this commit
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK" ]; then
+            echo "RENDER_DEPLOY_HOOK secret is not configured" >&2
+            exit 1
+          fi
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/loan-api:$GITHUB_SHA"
+          ENCODED_IMAGE=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$IMAGE")
+          curl --fail --show-error --silent --request POST "${RENDER_DEPLOY_HOOK}&imgURL=${ENCODED_IMAGE}"
+
+  verify:
+    needs: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      APP_URL: ${{ vars.APP_URL }}
+      EXPECTED_SHA: ${{ github.sha }}
+    steps:
+      - name: Wait until the live API reports this commit
+        run: |
+          if [ -z "$APP_URL" ]; then
+            echo "APP_URL variable is not configured" >&2
+            exit 1
+          fi
+          for attempt in $(seq 1 30); do
+            if response=$(curl --fail --show-error --silent --max-time 20 "$APP_URL/health"); then
+              live_sha=$(printf '%s' "$response" | python3 -c 'import json, sys; print(json.load(sys.stdin).get("git_sha", ""))')
+              if [ "$live_sha" = "$EXPECTED_SHA" ]; then
+                echo "Deployed and healthy: $live_sha"
+                exit 0
+              fi
+              echo "Live SHA is '$live_sha'; waiting for '$EXPECTED_SHA' ($attempt/30)"
+            else
+              echo "Health request failed; retrying ($attempt/30)"
+            fi
+            sleep 15
+          done
+          echo "The new version did not go live in time" >&2
+          exit 1

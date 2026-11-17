@@ -1,10 +1,12 @@
 """Loan Application Service: stores loan applications and scores their default risk."""
 from contextlib import asynccontextmanager
+import hmac
 import os
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from schemas import Application, ApplicationCreate, LoanFeatures, Prediction
 
@@ -13,6 +15,8 @@ APPLICATIONS = {}  # in-memory store; resets when the server restarts
 MODEL_NAME = os.getenv("MODEL_NAME", "loan-default")
 MODEL_ALIAS = os.getenv("MODEL_ALIAS", "champion")
 MODEL_PATH = os.getenv("MODEL_PATH", "model.joblib")
+API_KEY = os.getenv("API_KEY")
+GIT_SHA = os.getenv("GIT_SHA", "dev")
 FEATURES = ["amount_usd", "term_months", "monthly_income_usd", "previous_loans", "late_payments"]
 
 
@@ -46,6 +50,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Loan Application Service", version="1.0.0", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def require_api_key(request: Request, call_next):
+    if API_KEY and request.url.path.startswith("/api/"):
+        supplied = request.headers.get("x-api-key", "")
+        if not hmac.compare_digest(supplied.encode(), API_KEY.encode()):
+            return JSONResponse(status_code=401, content={"detail": "Missing or invalid API key"})
+    return await call_next(request)
+
+
 def score(features: LoanFeatures) -> Prediction:
     X = pd.DataFrame([features.model_dump()])[ml["features"]]
     probability = float(ml["predict_proba"](X)[0, 1])
@@ -55,7 +68,7 @@ def score(features: LoanFeatures) -> Prediction:
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_version": ml.get("version")}
+    return {"status": "ok", "model_version": ml.get("version"), "git_sha": GIT_SHA}
 
 
 @app.post("/api/v1/predictions", response_model=Prediction)
